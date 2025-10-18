@@ -25,7 +25,7 @@ static BLEDfuSecure bledfusecure;                                             //
 // This scratch buffer is used for various bluetooth reads/writes - but it is safe because only one bt operation can be in
 // process at once
 // static uint8_t trBytes[_max(_max(_max(_max(ToRadio_size, RadioConfig_size), User_size), MyNodeInfo_size), FromRadio_size)];
-static uint8_t fromRadioBytes[meshtastic_FromRadio_size];
+static uint8_t fromRadioBytes[MAX_TO_FROM_RADIO_SIZE];
 static uint8_t toRadioBytes[meshtastic_ToRadio_size];
 
 // Last ToRadio value received from the phone
@@ -244,6 +244,8 @@ void NRF52Bluetooth::setup()
     Bluefruit.autoConnLed(false);
     Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
     Bluefruit.begin();
+    // 设置蓝牙发射功率为最大值，确保设备可被扫描到
+    Bluefruit.setTxPower(4); // 最大信号强度，范围通常为-40到+4 dBm
     // Clear existing data.
     Bluefruit.Advertising.stop();
     Bluefruit.Advertising.clearData();
@@ -296,10 +298,13 @@ void NRF52Bluetooth::setup()
 }
 void NRF52Bluetooth::resumeAdvertising()
 {
+    // 设置蓝牙发射功率为最大值，确保设备可被扫描到
+    Bluefruit.setTxPower(4); // 最大信号强度，范围通常为-40到+4 dBm
     Bluefruit.Advertising.restartOnDisconnect(true);
     Bluefruit.Advertising.setInterval(32, 244); // in unit of 0.625 ms
     Bluefruit.Advertising.setFastTimeout(30);   // number of seconds in fast mode
     Bluefruit.Advertising.start(0);
+    LOG_INFO("Bluetooth advertising resumed with max power");
 }
 /// Given a level between 0-100, update the BLE attribute
 void updateBatteryLevel(uint8_t level)

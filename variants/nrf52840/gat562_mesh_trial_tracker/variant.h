@@ -60,11 +60,22 @@ extern "C" {
  * Buttons
  */
 
-#define PIN_BUTTON1 9 // Pin for button on E-ink button module or IO expansion
+// 五向按键定义
+#define PIN_BUTTON_UP 28    // P0.28 - 上键
+#define PIN_BUTTON_DOWN 4   // P0.04 - 下键
+#define PIN_BUTTON_LEFT 30  // P0.30 - 左键
+#define PIN_BUTTON_RIGHT 31 // P0.31 - 右键
+#define PIN_BUTTON_SELECT 26 // P0.26 - 选择键
+
 #define BUTTON_NEED_PULLUP
-#define PIN_BUTTON2 12
-#define PIN_BUTTON3 24
-#define PIN_BUTTON4 25
+#define BUTTON_ACTIVE_LOW true    // 按键按下时为低电平
+#define BUTTON_ACTIVE_PULLUP true // 使用内部上拉电阻
+
+// 兼容原有定义
+#define PIN_BUTTON1 PIN_BUTTON_SELECT
+#define PIN_BUTTON2 PIN_BUTTON_UP
+#define PIN_BUTTON3 PIN_BUTTON_DOWN
+#define PIN_BUTTON4 PIN_BUTTON_LEFT
 
 /*
  * Analog pins
@@ -163,50 +174,7 @@ static const uint8_t SCK = PIN_SPI_SCK;
 #define EXTERNAL_FLASH_DEVICES IS25LP080D
 #define EXTERNAL_FLASH_USE_QSPI
 
-/* @note RAK5005-O GPIO mapping to RAK4631 GPIO ports
-   RAK5005-O <->  nRF52840
-   IO1       <->  P0.17 (Arduino GPIO number 17)
-   IO2       <->  P1.02 (Arduino GPIO number 34)
-   IO3       <->  P0.21 (Arduino GPIO number 21)
-   IO4       <->  P0.04 (Arduino GPIO number 4)
-   IO5       <->  P0.09 (Arduino GPIO number 9)
-   IO6       <->  P0.10 (Arduino GPIO number 10)
-   IO7       <->  P0.28 (Arduino GPIO number 28)
-   SW1       <->  P0.01 (Arduino GPIO number 1)
-   A0        <->  P0.04/AIN2 (Arduino Analog A2
-   A1        <->  P0.31/AIN7 (Arduino Analog A7
-   SPI_CS    <->  P0.26 (Arduino GPIO number 26)
- */
-
 // RAK4630 LoRa module
-
-/* Setup of the SX1262 LoRa module ( https://docs.rakwireless.com/Product-Categories/WisBlock/RAK4631/Datasheet/ )
-
-P1.10   NSS     SPI NSS (Arduino GPIO number 42)
-P1.11   SCK     SPI CLK (Arduino GPIO number 43)
-P1.12   MOSI    SPI MOSI (Arduino GPIO number 44)
-P1.13   MISO    SPI MISO (Arduino GPIO number 45)
-P1.14   BUSY    BUSY signal (Arduino GPIO number 46)
-P1.15   DIO1    DIO1 event interrupt (Arduino GPIO number 47)
-P1.06   NRESET  NRESET manual reset of the SX1262 (Arduino GPIO number 38)
-
-Important for successful SX1262 initialization:
-
-* Setup DIO2 to control the antenna switch
-* Setup DIO3 to control the TCXO power supply
-* Setup the SX1262 to use it's DCDC regulator and not the LDO
-* RAK4630 schematics show GPIO P1.07 connected to the antenna switch, but it should not be initialized, as DIO2 will do the
-control of the antenna switch
-
-SO GPIO 39/TXEN MAY NOT BE DEFINED FOR SUCCESSFUL OPERATION OF THE SX1262 - TG
-
-*/
-
-// configure the SET pin on the RAK12039 sensor board to disable the sensor while not reading
-// air quality telemetry.  PIN_NFC2 doesn't seem to be used anywhere else in the codebase, but if
-// you're having problems with your node behaving weirdly when a RAK12039 board isn't connected,
-// try disabling this.
-// #define PMSA003I_ENABLE_PIN PIN_NFC2
 
 // #define DETECTION_SENSOR_EN 4
 
@@ -215,8 +183,8 @@ SO GPIO 39/TXEN MAY NOT BE DEFINED FOR SUCCESSFUL OPERATION OF THE SX1262 - TG
 #define SX126X_DIO1 (47)
 #define SX126X_BUSY (46)
 #define SX126X_RESET (38)
-// #define SX126X_TXEN (39)
-// #define SX126X_RXEN (37)
+#define SX126X_TXEN (39)
+#define SX126X_RXEN (37)
 #define SX126X_POWER_EN (37)
 // DIO2 controlls an antenna switch and the TCXO voltage is controlled by DIO3
 #define SX126X_DIO2_AS_RF_SWITCH
@@ -263,18 +231,13 @@ SO GPIO 39/TXEN MAY NOT BE DEFINED FOR SUCCESSFUL OPERATION OF THE SX1262 - TG
 #define AREF_VOLTAGE 3.0
 #define VBAT_AR_INTERNAL AR_INTERNAL_3_0
 #define ADC_MULTIPLIER 1.73
-
 // #define HAS_RTC 1
-
 // #define HAS_ETHERNET 1
-
 // #define RAK_4631 1
-
 // #define PIN_ETHERNET_RESET 21
 // #define PIN_ETHERNET_SS PIN_EINK_CS
 // #define ETH_SPI_PORT SPI1
 // #define AQ_SET_PIN 10
-
 #ifdef __cplusplus
 }
 #endif
@@ -282,5 +245,4 @@ SO GPIO 39/TXEN MAY NOT BE DEFINED FOR SUCCESSFUL OPERATION OF THE SX1262 - TG
 /*----------------------------------------------------------------------------
  *        Arduino objects - C++ only
  *----------------------------------------------------------------------------*/
-
 #endif

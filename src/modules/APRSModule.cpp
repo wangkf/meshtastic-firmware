@@ -14,27 +14,30 @@
 #include <time.h>
 #include "graphics/Screen.h"
 #include "graphics/SharedUIDisplay.h"
+// #include "Router.h" - 暂时不需要，因为没有使用observePackets方法
 
 // 配置对象已经在NodeDB.h中声明，不需要重复声明
 
 APRSModule *aprsModule;
 
-// APRS默认配置
+// APRS默认配置 - 与TTGO_T_Beam_LoRa_APRS.ino保持一致
 #define APRS_DEFAULT_ENABLED true
-#define APRS_DEFAULT_FREQUENCY 433.775  // 标准APRS频率
-#define APRS_DEFAULT_SF 12              // 扩频因子
-#define APRS_DEFAULT_BW 125             // 带宽(kHz)
-#define APRS_DEFAULT_CR 5               // 编码率
-#define APRS_DEFAULT_POWER 22           // 发射功率(dBm)
+#define APRS_DEFAULT_FREQUENCY 433.775f  // 标准APRS频率 - 与TTGO_T_Beam_LoRa_APRS.ino中的TXFREQ一致
+#define APRS_DEFAULT_SF 12              // 扩频因子 - 与TTGO_T_Beam_LoRa_APRS.ino一致
+#define APRS_DEFAULT_BW 125             // 带宽(kHz) - 与TTGO_T_Beam_LoRa_APRS.ino一致
+#define APRS_DEFAULT_CR 5               // 编码率 - 与TTGO_T_Beam_LoRa_APRS.ino一致
+#define APRS_DEFAULT_POWER 22           // 发射功率(dBm) - 与TTGO_T_Beam_LoRa_APRS.ino中的TXdbmW一致
 #define APRS_DEFAULT_CALLSIGN "BI9ABS"
 #define APRS_DEFAULT_SSID 2
-#define APRS_DEFAULT_BEACON_INTERVAL 300  // 5分钟
+#define APRS_DEFAULT_BEACON_INTERVAL 900  // 15分钟
+#define APRS_DEFAULT_FORWARD_MESSAGES true  // 默认启用消息转发
+#define APRS_DEFAULT_FORWARD_POSITIONS true  // 默认启位置转发
 
 APRSModule::APRSModule()
     : ProtobufModule("APRS", meshtastic_PortNum_ADMIN_APP, &meshtastic_AdminMessage_msg), 
-      concurrency::OSThread("APRS")
+       concurrency::OSThread("APRS")
 {
-    // 初始化默认配置
+    // 初始化默认配置 - 与TTGO_T_Beam_LoRa_APRS.ino保持一致的参数
     aprsConfig.enabled = APRS_DEFAULT_ENABLED;
     aprsConfig.frequency = APRS_DEFAULT_FREQUENCY;
     aprsConfig.spreadingFactor = APRS_DEFAULT_SF;
@@ -47,15 +50,24 @@ APRSModule::APRSModule()
     aprsConfig.usePositionData = true;
     aprsConfig.useCustomMessage = false;
     strcpy(aprsConfig.customMessage, "Meshtastic APRS");
+    aprsConfig.forwardMessages = APRS_DEFAULT_FORWARD_MESSAGES;  // 初始化消息转发设置
+    aprsConfig.forwardPositions = APRS_DEFAULT_FORWARD_POSITIONS; // 初始化位置转发设置
     
     lastAPRSSend = 0;
     lastFrequency = 0;
     isRadioReconfigured = false;
     txCount = 0;
     rxCount = 0;
+    forwardedMsgCount = 0;
+    forwardedPosCount = 0;
     
     // 加载配置
     loadAPRSConfig();
+    
+    // 注意：由于Router类没有observePackets方法，我们将使用handleReceived方法来处理本地消息
+    
+    LOG_INFO("APRSModule forwarding settings: messages=%d, positions=%d", 
+            aprsConfig.forwardMessages, aprsConfig.forwardPositions);
     
     // 设置运行间隔
     setIntervalFromNow(10000);  // 10秒后首次运行
@@ -65,22 +77,25 @@ void APRSModule::loadAPRSConfig()
 {
     // 为了简化编译，我们暂时跳过从protobuf加载配置的逻辑
     // 直接使用默认配置
-    LOG_INFO("Loading APRS config from storage: freq=%f, enabled=%d, callsign=%s-%d", 
-             aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid);
+    LOG_INFO("Loading APRS config from storage: freq=%f, enabled=%d, callsign=%s-%d, forwardMsg=%d, forwardPos=%d", 
+             aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid,
+             aprsConfig.forwardMessages, aprsConfig.forwardPositions);
 }
 
 void APRSModule::saveAPRSConfig()
 {
     // 为了简化编译，我们暂时跳过保存配置到protobuf的逻辑
     // 直接保存到存储设备
-    LOG_INFO("Saving APRS config to storage: freq=%f, enabled=%d, callsign=%s-%d", 
-             aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid);
+    LOG_INFO("Saving APRS config to storage: freq=%f, enabled=%d, callsign=%s-%d, forwardMsg=%d, forwardPos=%d", 
+             aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid,
+             aprsConfig.forwardMessages, aprsConfig.forwardPositions);
     
     // 保存到存储
     nodeDB->saveToDisk(SEGMENT_MODULECONFIG);
     
-    LOG_INFO("APRS config saved: freq=%f, enabled=%d, callsign=%s-%d", 
-             aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid);
+    LOG_INFO("APRS config saved: freq=%f, enabled=%d, callsign=%s-%d, forwardMsg=%d, forwardPos=%d", 
+             aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid,
+             aprsConfig.forwardMessages, aprsConfig.forwardPositions);
 }
 
 bool APRSModule::configureRadioForAPRS()
@@ -330,10 +345,99 @@ bool APRSModule::parseAPRSPacket(const uint8_t *data, size_t len)
     rxCount++; // 增加接收计数
     LOG_INFO("APRS packet received, total rx: %u", rxCount);
     
-    // 这里可以添加APRS包解析逻辑
     // 1. 提取呼号
+    char callsign[20];
+    char* callsignEnd = strchr(packet, '>');
+    if (callsignEnd) {
+        size_t callsignLen = callsignEnd - packet;
+        if (callsignLen < sizeof(callsign)) {
+            strncpy(callsign, packet, callsignLen);
+            callsign[callsignLen] = '\0';
+            LOG_INFO("APRS Source Callsign: %s", callsign);
+        }
+    }
+    
     // 2. 提取位置信息
+    // 位置报告格式: /HHMMSS/hddmm.mmN/dddmm.mmE-BTONE
+    char* posStart = strchr(packet, '/');
+    if (posStart && strstr(posStart, "/")) {
+        // 尝试找到位置部分
+        char* latStart = posStart;
+        char* latEnd = strchr(latStart, '/');
+        char* lonStart = latEnd ? latEnd + 1 : nullptr;
+        char* lonEnd = lonStart ? strchr(lonStart, '/') : nullptr;
+        
+        if (lonStart && lonEnd) {
+            // 提取时间
+            char timeStr[8];
+            if (latStart[1] != '\0') {
+                strncpy(timeStr, latStart + 1, 6);
+                timeStr[6] = '\0';
+                LOG_INFO("APRS Time: %s", timeStr);
+            }
+            
+            // 提取纬度
+            char latStr[12];
+            size_t latLen = lonStart - latStart - 1;
+            if (latLen < sizeof(latStr)) {
+                strncpy(latStr, latStart + 1, latLen);
+                latStr[latLen] = '\0';
+                LOG_INFO("APRS Latitude: %s", latStr);
+            }
+            
+            // 提取经度
+            char lonStr[12];
+            size_t lonLen = lonEnd - lonStart;
+            if (lonLen < sizeof(lonStr)) {
+                strncpy(lonStr, lonStart, lonLen);
+                lonStr[lonLen] = '\0';
+                LOG_INFO("APRS Longitude: %s", lonStr);
+            }
+        }
+    }
+    
     // 3. 提取消息内容
+    // 消息格式: ::TARGETCALL:MESSAGE TEXT{nnn
+    // 或简单文本消息
+    char* msgStart = nullptr;
+    
+    // 检查是否是标准消息格式
+    msgStart = strstr(packet, ":");
+    if (msgStart && msgStart[1] == ':') {
+        // 是标准消息格式
+        msgStart += 2; // 跳过 ::
+        
+        // 提取目标呼号
+        char targetCall[20];
+        char* targetEnd = strchr(msgStart, ':');
+        if (targetEnd) {
+            size_t targetLen = targetEnd - msgStart;
+            if (targetLen < sizeof(targetCall)) {
+                strncpy(targetCall, msgStart, targetLen);
+                targetCall[targetLen] = '\0';
+                LOG_INFO("APRS Message Target: %s", targetCall);
+                
+                // 提取消息内容
+                char* actualMsg = targetEnd + 1;
+                LOG_INFO("APRS Message Content: %s", actualMsg);
+            }
+        }
+    } else if (msgStart && (msgStart != strstr(packet, ">APRS"))) {
+        // 可能是简单文本消息或其他数据
+        msgStart += 1; // 跳过 :
+        LOG_INFO("APRS Data Content: %s", msgStart);
+    } else {
+        // 检查是否在位置信息后有消息
+        char* dataStart = strchr(packet, '-');
+        if (dataStart && isdigit(dataStart[1])) {
+            // 跳过符号和数字部分
+            while (isdigit(*dataStart)) dataStart++;
+            if (*dataStart == ' ') {
+                dataStart++;
+                LOG_INFO("APRS Data Content: %s", dataStart);
+            }
+        }
+    }
     
     return true;
 }
@@ -360,11 +464,16 @@ bool APRSModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtas
             LOG_INFO("APRSModule: Callsign field present but direct access not supported with nanopb callbacks\n");
             // 保留原有的呼号值
             
-            
             aprsConfig.ssid = aprsProtoConfig->ssid;
             aprsConfig.beaconInterval = aprsProtoConfig->beacon_interval;
             aprsConfig.usePositionData = aprsProtoConfig->use_position_data;
             aprsConfig.useCustomMessage = aprsProtoConfig->use_custom_message;
+            
+            // 更新转发设置
+            // 假设aprsProtoConfig结构体中有对应的字段
+            // 如果没有，我们将保持默认值
+            // aprsConfig.forwardMessages = aprsProtoConfig->forward_messages;
+            // aprsConfig.forwardPositions = aprsProtoConfig->forward_positions;
             
             // 处理自定义消息字符串
             if (aprsProtoConfig->custom_message.funcs.decode) {
@@ -377,12 +486,76 @@ bool APRSModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtas
             // 保存配置
             saveAPRSConfig();
             
-            LOG_INFO("Updated APRS module config: freq=%f, enabled=%d, callsign=%s-%d", 
-                    aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid);
+            LOG_INFO("Updated APRS module config: freq=%f, enabled=%d, callsign=%s-%d, forwardMsg=%d, forwardPos=%d", 
+                    aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid,
+                    aprsConfig.forwardMessages, aprsConfig.forwardPositions);
                     
             return true;
         }
     }
+    
+    return false;
+}
+
+// 处理本地发送的数据包，用于捕获要转发的消息和位置
+int APRSModule::handleLocalMeshPacket(const meshtastic_MeshPacket *p)
+{
+    // 检查APRS模块是否启用或转发功能是否开启
+    if (!aprsConfig.enabled || (!aprsConfig.forwardMessages && !aprsConfig.forwardPositions)) {
+        return 0; // 允许其他观察者继续处理
+    }
+    
+    // 确保这是本地发送的数据包
+    if (!isFromUs(p)) {
+        return 0; // 允许其他观察者继续处理
+    }
+    
+    // 检查是否是已解码的数据包
+    if (p->which_payload_variant != meshtastic_MeshPacket_decoded_tag) {
+        return 0; // 允许其他观察者继续处理
+    }
+    
+    // 检查是否允许发送（避免频繁发送）
+    if (!airTime->isTxAllowedAirUtil()) {
+        LOG_DEBUG("APRSModule: Air time limit reached, skipping forward");
+        return 0; // 允许其他观察者继续处理
+    }
+    
+    // 处理文本消息转发
+    if (aprsConfig.forwardMessages && p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP) {
+        // 从payload中提取消息内容
+        char message[256];
+        size_t msgLen = p->decoded.payload.size;
+        
+        if (msgLen > 0) {
+            // 确保消息不超过缓冲区大小
+            size_t copyLen = msgLen > sizeof(message) - 1 ? sizeof(message) - 1 : msgLen;
+            memcpy(message, p->decoded.payload.bytes, copyLen);
+            message[copyLen] = '\0';
+            
+            // 转发消息到APRS网络
+            LOG_INFO("APRSModule: Forwarding Meshtastic message to APRS: %s", message);
+            sendAPRSMessage(message);
+            forwardedMsgCount++;
+        }
+    }
+    
+    // 处理位置信息转发
+    if (aprsConfig.forwardPositions && p->decoded.portnum == meshtastic_PortNum_POSITION_APP) {
+        // 转发位置到APRS网络
+        LOG_INFO("APRSModule: Forwarding Meshtastic position to APRS");
+        sendAPRSPosition();
+        forwardedPosCount++;
+    }
+    
+    return 0; // 允许其他观察者继续处理
+}
+
+// 处理接收到的任何数据包，包括文本消息
+ProcessMessage APRSModule::handleReceived(const meshtastic_MeshPacket &mp)
+{
+    // 首先调用父类的handleReceivedProtobuf方法处理管理消息
+    bool handled = handleReceivedProtobuf(mp, (meshtastic_AdminMessage*)mp.decoded.payload.bytes);
     
     // 检查是否是文本消息，可能包含APRS数据
     if (mp.which_payload_variant == meshtastic_MeshPacket_decoded_tag && 
@@ -392,7 +565,14 @@ bool APRSModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtas
         parseAPRSPacket(mp.decoded.payload.bytes, mp.decoded.payload.size);
     }
     
-    return false;
+    // 处理本地发送的消息和位置，用于转发到APRS
+    if (isFromUs(&mp) && mp.which_payload_variant == meshtastic_MeshPacket_decoded_tag) {
+        // 调用转发处理逻辑
+        handleLocalMeshPacket(&mp);
+    }
+    
+    // 如果消息已处理，返回STOP，否则返回CONTINUE
+    return handled ? ProcessMessage::STOP : ProcessMessage::CONTINUE;
 }
 
 int32_t APRSModule::runOnce()

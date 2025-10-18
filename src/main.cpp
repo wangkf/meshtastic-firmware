@@ -121,6 +121,12 @@ ButtonThread *BackButtonThread = nullptr;
 ButtonThread *CancelButtonThread = nullptr;
 #endif
 
+// 五向按键 - 方向键线程声明
+ButtonThread *UpButtonThread = nullptr;
+ButtonThread *DownButtonThread = nullptr;
+ButtonThread *LeftButtonThread = nullptr;
+ButtonThread *RightButtonThread = nullptr;
+
 #endif
 
 #include "AmbientLightingThread.h"
@@ -1112,6 +1118,83 @@ void setup()
     }
 #endif
 
+#endif
+
+// 初始化五向按键的方向键
+#ifdef PIN_BUTTON_UP
+    UpButtonThread = new ButtonThread("UpButton");
+    ButtonConfig upConfig;
+    upConfig.pinNumber = PIN_BUTTON_UP;
+    upConfig.activeLow = BUTTON_ACTIVE_LOW;
+    upConfig.activePullup = BUTTON_ACTIVE_PULLUP;
+    upConfig.pullupSense = pullup_sense;
+    upConfig.intRoutine = []() {
+        UpButtonThread->userButton.tick();
+        UpButtonThread->setIntervalFromNow(0);
+        runASAP = true;
+        BaseType_t higherWake = 0;
+        mainDelay.interruptFromISR(&higherWake);
+    };
+    upConfig.singlePress = INPUT_BROKER_UP;
+    upConfig.longPress = INPUT_BROKER_NONE;
+    UpButtonThread->initButton(upConfig);
+#endif
+
+#ifdef PIN_BUTTON_DOWN
+    DownButtonThread = new ButtonThread("DownButton");
+    ButtonConfig downConfig;
+    downConfig.pinNumber = PIN_BUTTON_DOWN;
+    downConfig.activeLow = BUTTON_ACTIVE_LOW;
+    downConfig.activePullup = BUTTON_ACTIVE_PULLUP;
+    downConfig.pullupSense = pullup_sense;
+    downConfig.intRoutine = []() {
+        DownButtonThread->userButton.tick();
+        DownButtonThread->setIntervalFromNow(0);
+        runASAP = true;
+        BaseType_t higherWake = 0;
+        mainDelay.interruptFromISR(&higherWake);
+    };
+    downConfig.singlePress = INPUT_BROKER_DOWN;
+    downConfig.longPress = INPUT_BROKER_NONE;
+    DownButtonThread->initButton(downConfig);
+#endif
+
+#ifdef PIN_BUTTON_LEFT
+    LeftButtonThread = new ButtonThread("LeftButton");
+    ButtonConfig leftConfig;
+    leftConfig.pinNumber = PIN_BUTTON_LEFT;
+    leftConfig.activeLow = BUTTON_ACTIVE_LOW;
+    leftConfig.activePullup = BUTTON_ACTIVE_PULLUP;
+    leftConfig.pullupSense = pullup_sense;
+    leftConfig.intRoutine = []() {
+        LeftButtonThread->userButton.tick();
+        LeftButtonThread->setIntervalFromNow(0);
+        runASAP = true;
+        BaseType_t higherWake = 0;
+        mainDelay.interruptFromISR(&higherWake);
+    };
+    leftConfig.singlePress = INPUT_BROKER_LEFT;
+    leftConfig.longPress = INPUT_BROKER_NONE;
+    LeftButtonThread->initButton(leftConfig);
+#endif
+
+#ifdef PIN_BUTTON_RIGHT
+    RightButtonThread = new ButtonThread("RightButton");
+    ButtonConfig rightConfig;
+    rightConfig.pinNumber = PIN_BUTTON_RIGHT;
+    rightConfig.activeLow = BUTTON_ACTIVE_LOW;
+    rightConfig.activePullup = BUTTON_ACTIVE_PULLUP;
+    rightConfig.pullupSense = pullup_sense;
+    rightConfig.intRoutine = []() {
+        RightButtonThread->userButton.tick();
+        RightButtonThread->setIntervalFromNow(0);
+        runASAP = true;
+        BaseType_t higherWake = 0;
+        mainDelay.interruptFromISR(&higherWake);
+    };
+    rightConfig.singlePress = INPUT_BROKER_RIGHT;
+    rightConfig.longPress = INPUT_BROKER_NONE;
+    RightButtonThread->initButton(rightConfig);
 #endif
 
 #ifdef MESHTASTIC_INCLUDE_NICHE_GRAPHICS

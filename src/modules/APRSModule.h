@@ -28,6 +28,8 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
         bool usePositionData;      // 是否使用位置数据
         bool useCustomMessage;     // 是否使用自定义消息
         char customMessage[80];    // 自定义消息(最大79字符)
+        bool forwardMessages;      // 是否转发Meshtastic消息
+        bool forwardPositions;     // 是否转发Meshtastic位置
     };
 
     APRSConfig aprsConfig;        // APRS配置
@@ -36,6 +38,10 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
     bool isRadioReconfigured;     // 是否需要重新配置无线电
     uint32_t txCount;             // 发送的APRS数据包数量
     uint32_t rxCount;             // 接收的APRS数据包数量
+    uint32_t forwardedMsgCount;   // 转发的消息数量
+    uint32_t forwardedPosCount;   // 转发的位置数量
+    
+    // 暂时移除观察者，因为Router类没有observePackets方法
 
     // 临时保存原始LoRa配置，以便在APRS传输后恢复
     float originalFreq;           // 原始频率
@@ -80,6 +86,12 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
      */
     APRSModule();
     
+    /** 获取转发的消息数量 */
+    uint32_t getForwardedMsgCount() const { return forwardedMsgCount; }
+    
+    /** 获取转发的位置数量 */
+    uint32_t getForwardedPosCount() const { return forwardedPosCount; }
+    
     /**
      * 获取发送的APRS数据包数量
      */
@@ -116,6 +128,12 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
      * @return true如果已保证处理此消息且不应考虑其他处理程序
      */
     virtual bool handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_AdminMessage *p) override;
+    
+    /** 处理本地发送的数据包，用于捕获要转发的消息和位置 */
+     int handleLocalMeshPacket(const meshtastic_MeshPacket *p);
+    
+    /** 处理接收到的任何数据包，包括文本消息 */
+    virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
 
     /** 执行周期性广播
      */
