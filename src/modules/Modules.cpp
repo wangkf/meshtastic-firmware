@@ -106,6 +106,7 @@
 #if !MESHTASTIC_EXCLUDE_DROPZONE
 #include "modules/DropzoneModule.h"
 #endif
+#include "modules/APRSModule.h"
 
 /**
  * Create module instances here.  If you are adding a new module, you must 'new' it here (or somewhere else)
@@ -173,6 +174,7 @@ void setupModules()
 #endif
     // Example: Put your module here
     // new ReplyModule();
+    aprsModule = new APRSModule();
 #if (HAS_BUTTON || ARCH_PORTDUINO) && !MESHTASTIC_EXCLUDE_INPUTBROKER
     if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {
         rotaryEncoderInterruptImpl1 = new RotaryEncoderInterruptImpl1();

@@ -3,6 +3,7 @@
 #include "RTC.h"
 #include "Throttle.h"
 #include "configuration.h"
+#include "generated/meshtastic/mesh.pb.h" // 确保包含正确的protobuf头文件
 
 #define START1 0x94
 #define START2 0xc3
@@ -190,7 +191,7 @@ void StreamAPI::emitRebooted()
     fromRadioScratch.rebooted = true;
 
     // LOG_DEBUG("Emitting reboot packet for serial shell");
-    emitTxBuffer(pb_encode_to_bytes(txBuf + HEADER_LEN, meshtastic_FromRadio_size, &meshtastic_FromRadio_msg, &fromRadioScratch));
+    emitTxBuffer(pb_encode_to_bytes(txBuf + HEADER_LEN, MAX_TO_FROM_RADIO_SIZE, &meshtastic_FromRadio_msg, &fromRadioScratch));
 }
 
 void StreamAPI::emitLogRecord(meshtastic_LogRecord_Level level, const char *src, const char *format, va_list arg)
@@ -209,7 +210,7 @@ void StreamAPI::emitLogRecord(meshtastic_LogRecord_Level level, const char *src,
     if (num_printed > 0 && fromRadioScratch.log_record.message[num_printed - 1] ==
                                '\n') // Strip any ending newline, because we have records for framing instead.
         fromRadioScratch.log_record.message[num_printed - 1] = '\0';
-    emitTxBuffer(pb_encode_to_bytes(txBuf + HEADER_LEN, meshtastic_FromRadio_size, &meshtastic_FromRadio_msg, &fromRadioScratch));
+    emitTxBuffer(pb_encode_to_bytes(txBuf + HEADER_LEN, MAX_TO_FROM_RADIO_SIZE, &meshtastic_FromRadio_msg, &fromRadioScratch));
 }
 
 /// Hookable to find out when connection changes
