@@ -28,8 +28,6 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
         bool usePositionData;      // 是否使用位置数据
         bool useCustomMessage;     // 是否使用自定义消息
         char customMessage[80];    // 自定义消息(最大79字符)
-        bool forwardMessages;      // 是否转发Meshtastic消息
-        bool forwardPositions;     // 是否转发Meshtastic位置
     };
 
     APRSConfig aprsConfig;        // APRS配置
@@ -37,9 +35,6 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
     uint32_t lastFrequency;       // 上次使用的频率
     bool isRadioReconfigured;     // 是否需要重新配置无线电
     uint32_t txCount;             // 发送的APRS数据包数量
-    uint32_t rxCount;             // 接收的APRS数据包数量
-    uint32_t forwardedMsgCount;   // 转发的消息数量
-    uint32_t forwardedPosCount;   // 转发的位置数量
     
     // 暂时移除观察者，因为Router类没有observePackets方法
 
@@ -70,10 +65,7 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
      */
     meshtastic_MeshPacket *buildAPRSMessagePacket(const char *message);
 
-    /**
-     * 解析接收到的APRS数据包
-     */
-    bool parseAPRSPacket(const uint8_t *data, size_t len);
+    // 接收功能已移除，不再需要解析APRS数据包的方法
 
     /**
      * 格式化APRS位置字符串
@@ -86,21 +78,10 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
      */
     APRSModule();
     
-    /** 获取转发的消息数量 */
-    uint32_t getForwardedMsgCount() const { return forwardedMsgCount; }
-    
-    /** 获取转发的位置数量 */
-    uint32_t getForwardedPosCount() const { return forwardedPosCount; }
-    
     /**
      * 获取发送的APRS数据包数量
      */
     uint32_t getTxCount() const { return txCount; }
-    
-    /**
-     * 获取接收的APRS数据包数量
-     */
-    uint32_t getRxCount() const { return rxCount; }
 
     /**
      * 发送APRS位置数据包
@@ -129,10 +110,7 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
      */
     virtual bool handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_AdminMessage *p) override;
     
-    /** 处理本地发送的数据包，用于捕获要转发的消息和位置 */
-     int handleLocalMeshPacket(const meshtastic_MeshPacket *p);
-    
-    /** 处理接收到的任何数据包，包括文本消息 */
+    /** 处理接收到的任何数据包，不处理接收功能 */
     virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
 
     /** 执行周期性广播
