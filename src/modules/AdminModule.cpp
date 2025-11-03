@@ -949,6 +949,10 @@ bool AdminModule::handleSetModuleConfig(const meshtastic_ModuleConfig &c)
         moduleConfig.has_paxcounter = true;
         moduleConfig.paxcounter = c.payload_variant.paxcounter;
         break;
+    // APRS module config not implemented yet
+    case meshtastic_ModuleConfig_aprs_tag:
+        LOG_INFO("Set module config: APRS - Not implemented");
+        break;
     }
     saveChanges(SEGMENT_MODULECONFIG);
     return true;
@@ -1128,6 +1132,13 @@ void AdminModule::handleGetModuleConfig(const meshtastic_MeshPacket &req, const 
             LOG_INFO("Get module config: Paxcounter");
             res.get_module_config_response.which_payload_variant = meshtastic_ModuleConfig_paxcounter_tag;
             res.get_module_config_response.payload_variant.paxcounter = moduleConfig.paxcounter;
+            break;
+        // APRS module config not implemented yet
+        case meshtastic_AdminMessage_ModuleConfigType_APRS_CONFIG:
+            LOG_INFO("Get module config: APRS - Not implemented");
+            break;
+        default:
+            // 对于未明确处理的配置类型，保留默认行为
             break;
         }
 

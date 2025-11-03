@@ -84,7 +84,7 @@ int32_t i2cButtonThread::runOnce()
         long_press_triggered = true;
         InputEvent evt;
         evt.source = "UserButton";
-        evt.inputEvent = INPUT_BROKER_SELECT;
+        evt.inputEvent = INPUT_BROKER_SELECT_LONG;
         evt.kbchar = 0;
         evt.touchX = 0;
         evt.touchY = 0;

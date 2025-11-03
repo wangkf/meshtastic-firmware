@@ -8,10 +8,10 @@
 #include "OLEDDisplay.h"
 #include "OLEDDisplayUi.h"
 
-/**
- * APRS模块用于发送/接收APRS格式的位置和信息数据包
- */
-class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concurrency::OSThread, public Observable<const UIFrameEvent *>
+#include <Arduino.h>
+
+//*** APRS模块用于发送/接收APRS格式的位置和信息数据包
+class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concurrency::OSThread, public Observable<const UIFrameEvent *>, public Observer<const UIFrameEvent *>
 {
   private:
     // APRS配置结构体
@@ -35,8 +35,6 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
     uint32_t lastFrequency;       // 上次使用的频率
     bool isRadioReconfigured;     // 是否需要重新配置无线电
     uint32_t txCount;             // 发送的APRS数据包数量
-    
-    // 暂时移除观察者，因为Router类没有observePackets方法
 
     // 临时保存原始LoRa配置，以便在APRS传输后恢复
     float originalFreq;           // 原始频率
@@ -44,78 +42,51 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
     uint8_t originalBW;           // 原始带宽
     uint8_t originalCR;           // 原始编码率
     int8_t originalPower;         // 原始功率
-
-    /**
-     * 配置无线电为APRS模式
-     */
+    //*** 配置无线电为APRS模式
     bool configureRadioForAPRS();
-
-    /**
-     * 恢复原始无线电配置
-     */
+    //*** 恢复原始无线电配置
     bool restoreOriginalRadioConfig();
-
-    /**
-     * 构建APRS位置数据包
-     */
+    //*** 构建APRS位置数据包
     meshtastic_MeshPacket *buildAPRSPositionPacket();
-
-    /**
-     * 构建APRS消息数据包
-     */
+    //*** 构建APRS消息数据包
     meshtastic_MeshPacket *buildAPRSMessagePacket(const char *message);
-
-    // 接收功能已移除，不再需要解析APRS数据包的方法
-
-    /**
-     * 格式化APRS位置字符串
-     */
-    void formatAPRSPosition(char *buffer, size_t bufferSize, double lat, double lon, uint16_t altitude);
-
+    //*** 格式化APRS位置字符串
+    void formatAPRSPosition(char *buffer, size_t bufferSize, double lat, double lon, uint16_t altitude, float course = 0.0, float speed = 0.0, float battVoltage = 0.0);
+    //*** 格式化纬度为APRS格式
+    String formatLatitudeAPRS(double lat);
+    //*** 格式化经度为APRS格式
+    String formatLongitudeAPRS(double lon);
   public:
-    /** 构造函数
-     * name是用于调试输出的名称
-     */
+    //** 构造函数* name是用于调试输出的名称
     APRSModule();
-    
-    /**
-     * 获取发送的APRS数据包数量
-     */
+    //*** 获取发送的APRS数据包数量
     uint32_t getTxCount() const { return txCount; }
-
-    /**
-     * 发送APRS位置数据包
-     */
+    //*** 发送APRS位置数据包
     void sendAPRSPosition();
-
-    /**
-     * 发送APRS自定义消息
-     */
+    //*** 发送预设位置的APRS数据包
+    void sendPresetLocationAPRS();
+    //*** 发送APRS自定义消息
     void sendAPRSMessage(const char *message);
-
-    /**
-     * 保存APRS配置
-     */
+    //*** 保存APRS配置
     void saveAPRSConfig();
-
-    /**
-     * 加载APRS配置
-     */
+    //*** 加载APRS配置
     void loadAPRSConfig();
+    // Methods for menu control - always public
+    bool isEnabled() const { return aprsConfig.enabled; }
+    void toggleEnabled() { 
+        aprsConfig.enabled = !aprsConfig.enabled; 
+        saveAPRSConfig(); 
+    }
 
   protected:
-    /** 处理接收到的特定消息
-     * 
-     * @return true如果已保证处理此消息且不应考虑其他处理程序
-     */
+    //** 处理接收到的特定消息 * @return true如果已保证处理此消息且不应考虑其他处理程序
     virtual bool handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_AdminMessage *p) override;
-    
     /** 处理接收到的任何数据包，不处理接收功能 */
     virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
-
-    /** 执行周期性广播
-     */
+    //** 执行周期性广播
     virtual int32_t runOnce() override;
+
+    // UIFrameEvent is defined in MeshModule.h
 
 #if HAS_SCREEN
     // UI相关方法
@@ -124,6 +95,12 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
     virtual void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y) override;
     virtual bool isRequestingFocus() override { return false; }
     virtual bool interceptingKeyboardInput() override { return false; }
+    // 处理UI框架事件
+    virtual void handleUIFrameEvent(const UIFrameEvent *evt);
+    // 实现Observer接口 - 处理UI框架事件
+    virtual int onNotify(const UIFrameEvent *evt) override;
+    // 显示APRS配置菜单
+    void showAPRSConfigMenu();
 #endif
 };
 

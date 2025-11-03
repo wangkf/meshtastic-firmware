@@ -39,6 +39,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "draw/NotificationRenderer.h"
 #include "draw/UIRenderer.h"
 #include "modules/CannedMessageModule.h"
+#include "modules/APRSModule.h"
 
 #if !MESHTASTIC_EXCLUDE_GPS
 #include "GPS.h"
@@ -1581,6 +1582,33 @@ int Screen::handleInputEvent(const InputEvent *event)
 
     // Use left or right input from a keyboard to move between frames,
     // so long as a mesh module isn't using these events for some other purpose
+    // Handle long press event
+    if (event->inputEvent == INPUT_BROKER_SELECT_LONG) {
+        // 检查当前是否在模块框架范围内
+        int frameIndex = this->ui->getUiState()->currentFrame;
+        size_t moduleCount = moduleFrames.size();
+        if (moduleCount > 0 && frameIndex >= framesetInfo.positions.focusedModule && (size_t)(frameIndex - framesetInfo.positions.focusedModule) < moduleCount) {
+            // 计算模块索引
+            size_t moduleIndex = (size_t)(frameIndex - framesetInfo.positions.focusedModule);
+            MeshModule *currentModule = moduleFrames.at(moduleIndex);
+            
+            // 创建长按事件并发送给模块
+            UIFrameEvent e;
+            e.action = UIFrameEvent::Action::LONG_PRESS;
+            
+            // 通知模块观察者
+            Observable<const UIFrameEvent *> *observable = currentModule->getUIFrameObservable();
+            if (observable) {
+                observable->notifyObservers(&e);
+            }
+            return 0;
+        } else {
+            // 非模块框架时，直接显示APRS菜单
+            screen->requestMenu(graphics::menuHandler::aprs_menu);
+            return 0;
+        }
+    }
+
     if (showingNormalScreen) {
 
         // Ask any MeshModules if they're handling keyboard input right now
@@ -1632,11 +1660,22 @@ int Screen::handleInputEvent(const InputEvent *event)
                     menuHandler::nodeListMenu();
                 } else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.wifi) {
                     menuHandler::wifiBaseMenu();
+                } else {
+                    // 检查当前框架是否是模块框架中的APRS模块
+                    // 由于APRS模块没有在framesetInfo.positions中定义，我们需要特殊处理
+                    int frameIndex = this->ui->getUiState()->currentFrame;
+                    // 检查是否是在模块框架范围内（通过moduleFrames是否有对应索引的模块）
+                    if (moduleFrames.size() > 0 && static_cast<size_t>(frameIndex) >= framesetInfo.positions.focusedModule && static_cast<size_t>(frameIndex) < (framesetInfo.positions.focusedModule + moduleFrames.size())) {
+                        // 直接显示APRS菜单，这样用户可以通过短按来配置APRS，与时钟模块行为一致
+                        screen->requestMenu(graphics::menuHandler::aprs_menu);
+                    }
                 }
             } else if (event->inputEvent == INPUT_BROKER_BACK) {
                 showPrevFrame();
             } else if (event->inputEvent == INPUT_BROKER_CANCEL) {
                 setOn(false);
+            } else if (event->inputEvent == INPUT_BROKER_SELECT) {
+                // Continue with standard menu handling
             }
         }
     }

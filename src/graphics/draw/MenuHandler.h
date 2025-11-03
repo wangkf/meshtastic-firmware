@@ -44,10 +44,12 @@ class menuHandler
         trace_route_menu,
         throttle_message,
         node_name_length_menu,
-        FrameToggles
+        FrameToggles,
+        aprs_menu
     };
     static screenMenus menuQueue;
-
+    
+    static void aprsMenu();
     static void OnboardMessage();
     static void LoraRegionPicker(uint32_t duration = 30000);
     static void loraMenu();

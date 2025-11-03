@@ -17,8 +17,8 @@
 #include "modules/AdminModule.h"
 #include "modules/CannedMessageModule.h"
 #include "modules/KeyVerificationModule.h"
-
 #include "modules/TraceRouteModule.h"
+#include "modules/APRSModule.h"
 #include <functional>
 
 extern uint16_t TFT_MESH;
@@ -1694,8 +1694,48 @@ void menuHandler::handleMenuSwitch(OLEDDisplay *display)
     case throttle_message:
         screen->showSimpleBanner("Too Many Attempts\nTry again in 60 seconds.", 5000);
         break;
+    case aprs_menu:
+        aprsMenu();
+        break;
     }
     menuQueue = menu_none;
+}
+
+void menuHandler::aprsMenu()
+{
+    // Use the global aprsModule instance (extern declared)
+    if (!aprsModule) {
+        screen->showSimpleBanner("APRS Module Not Found", 2000);
+        return;
+    }
+
+    // Check if APRS is enabled
+    bool aprsEnabled = aprsModule->isEnabled();
+    static const char *optionsArray[] = {"Back", aprsEnabled ? "Disable APRS" : "Enable APRS", "Send Now"};
+    
+    BannerOverlayOptions bannerOptions;
+    bannerOptions.message = "APRS Actions";
+    bannerOptions.optionsArrayPtr = optionsArray;
+    bannerOptions.optionsCount = 3;
+    bannerOptions.bannerCallback = [aprsModule](int selected) -> void {
+        if (selected == 1) { // Toggle enable/disable
+            aprsModule->toggleEnabled();
+            bool newState = aprsModule->isEnabled();
+            char statusMsg[32];
+            snprintf(statusMsg, sizeof(statusMsg), "APRS %s", newState ? "Enabled" : "Disabled");
+            screen->showSimpleBanner(statusMsg, 2000);
+        } else if (selected == 2) { // Send now
+            if (aprsModule->isEnabled()) {
+                aprsModule->sendAPRSPosition();
+                screen->showSimpleBanner("APRS Sent", 1500);
+            } else {
+                screen->showSimpleBanner("APRS Disabled", 2000);
+            }
+        }
+        // selected == 0: Back, no action needed
+    };
+    
+    screen->showOverlayBanner(bannerOptions);
 }
 
 void menuHandler::saveUIConfig()

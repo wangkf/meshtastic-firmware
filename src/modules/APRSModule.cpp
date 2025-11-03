@@ -14,12 +14,10 @@
 #include <time.h>
 #include "graphics/Screen.h"
 #include "graphics/SharedUIDisplay.h"
+#include "input/InputBroker.h"
 // #include "Router.h" - 暂时不需要，因为没有使用observePackets方法
-
 // 配置对象已经在NodeDB.h中声明，不需要重复声明
-
 APRSModule *aprsModule;
-
 // APRS默认配置
 #define APRS_DEFAULT_ENABLED true
 #define APRS_DEFAULT_FREQUENCY 433.775f  // 标准APRS频率
@@ -30,7 +28,10 @@ APRSModule *aprsModule;
 #define APRS_DEFAULT_CALLSIGN "BI9ABS"
 #define APRS_DEFAULT_SSID 2
 #define APRS_DEFAULT_BEACON_INTERVAL 900  // 15分钟
-
+// LoRa头部定义 - 参考demo.cpp
+#define LORA_START_BYTE_1 '<'
+#define LORA_START_BYTE_2 0xFF
+#define LORA_START_BYTE_3 0x01
 APRSModule::APRSModule()
     : ProtobufModule("APRS", meshtastic_PortNum_ADMIN_APP, &meshtastic_AdminMessage_msg), 
        concurrency::OSThread("APRS")
@@ -58,10 +59,10 @@ APRSModule::APRSModule()
     // 加载配置
     loadAPRSConfig();
     
-    // 注意：由于Router类没有observePackets方法，我们将使用handleReceived方法来处理本地消息
     
     LOG_INFO("APRSModule initialized: freq=%.3f MHz, enabled=%d, callsign=%s-%d", 
             aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid);
+    IF_SCREEN(LOG_INFO("APRSModule: screen pointer available: %p", screen));
     
     // 设置运行间隔
     setIntervalFromNow(10000);  // 10秒后首次运行
@@ -151,37 +152,45 @@ bool APRSModule::restoreOriginalRadioConfig()
     return true;
 }
 
-void APRSModule::formatAPRSPosition(char *buffer, size_t bufferSize, double lat, double lon, uint16_t altitude)
+// 重构的位置格式化方法 - 基于doc/src中的recalcGPS函数
+String APRSModule::formatLatitudeAPRS(double lat)
 {
-    // 格式化APRS位置字符串
-    // 格式: /HHMMSS/hdddd.ddN/dddmm.mmE-A
-    
-    // 获取当前时间
-    time_t now = getValidTime(RTCQuality::RTCQualityDevice, true);
-    struct tm *timeinfo = localtime(&now);
-    
-    // 格式化时间
-    sprintf(buffer, "/%02d%02d%02dz", 
-            timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-    
-    // 格式化纬度
     char latDir = (lat >= 0) ? 'N' : 'S';
     double latAbs = fabs(lat);
     int latDeg = (int)latAbs;
     double latMin = (latAbs - latDeg) * 60;
     
-    // 格式化经度
+    char buffer[10];
+    // 按照APRS标准格式，纬度为DDMM.mmN/S
+    snprintf(buffer, sizeof(buffer), "%02d%05.2f%c", latDeg, latMin, latDir);
+    return String(buffer);
+}
+
+String APRSModule::formatLongitudeAPRS(double lon)
+{
     char lonDir = (lon >= 0) ? 'E' : 'W';
     double lonAbs = fabs(lon);
     int lonDeg = (int)lonAbs;
     double lonMin = (lonAbs - lonDeg) * 60;
     
-    // 添加位置信息
-    sprintf(buffer + strlen(buffer), "%02d%05.2f%c/%03d%05.2f%c", 
-            latDeg, latMin, latDir, lonDeg, lonMin, lonDir);
+    char buffer[11];
+    // 按照APRS标准格式，经度为DDDMM.mmE/W
+    snprintf(buffer, sizeof(buffer), "%03d%05.2f%c", lonDeg, lonMin, lonDir);
+    return String(buffer);
+}
+
+// 基于doc/src中的recalcGPS函数重构的位置格式化方法
+void APRSModule::formatAPRSPosition(char *buffer, size_t bufferSize, double lat, double lon, uint16_t altitude, float course, float speed, float battVoltage)
+{
+    // 获取格式化的经纬度
+    String latStr = formatLatitudeAPRS(lat);
+    String lonStr = formatLongitudeAPRS(lon);
     
-    // 添加附加信息
-    sprintf(buffer + strlen(buffer), "-\\/%03d/%03d", altitude, 0); // 高度和航向
+    // 参考doc/src中的APRS格式: !=latitudeN/S/longitudeE/Wsymbolcourse/speed/A=altitude Batt=voltageV custom_message
+    snprintf(buffer, bufferSize, ":=%s/%s[b%03d/%03d/A=%06d Batt=%.2fV Meshtastic APRS", 
+             latStr.c_str(), lonStr.c_str(), 
+             static_cast<int>(course), static_cast<int>(speed),
+             static_cast<int>(altitude * 3.28), battVoltage);
 }
 
 meshtastic_MeshPacket *APRSModule::buildAPRSPositionPacket()
@@ -198,45 +207,64 @@ meshtastic_MeshPacket *APRSModule::buildAPRSPositionPacket()
     double lon = node->position.longitude_i * 1e-7;
     uint16_t altitude = node->position.altitude; // PositionLite的altitude已经是米单位
     
-    // 构建APRS包
-    char aprsPacket[256];
+    // 获取速度和航向信息（如果可用）
+    float course = 0.0;  // 默认航向为0度
+    float speed = 0.0;   // 默认速度为0节
     
-    // 添加呼号和SSID
-    if (aprsConfig.ssid > 0) {
-        sprintf(aprsPacket, "%s-%d>", aprsConfig.callsign, aprsConfig.ssid);
+    // 获取电池电压
+    float battVoltage = 0.0;
+    // 尝试获取电池电压 - 参考doc/src中的batt_read函数
+    if (powerStatus->getHasBattery()) {
+        battVoltage = powerStatus->getBatteryVoltageMv() / 1000.0; // 转换为伏特
     } else {
-        sprintf(aprsPacket, "%s>", aprsConfig.callsign);
+        battVoltage = 5.0; // 假设USB供电
     }
     
-    // 添加目标 - 使用标准APRS路径，适合LoRa APRS
-    strcat(aprsPacket, "APRS,qAR,");
-    strcat(aprsPacket, aprsConfig.callsign);
-    strcat(aprsPacket, "*");
+    // 构建APRS包 - 基于doc/src中的recalcGPS和sendpacket函数
+    char aprsPacket[256];
     
-    // 添加位置信息
-    char position[64];
-    formatAPRSPosition(position, sizeof(position), lat, lon, altitude);
+    // 添加呼号和SSID - 参考doc/src中的CALLSIGN格式
+    if (aprsConfig.ssid > 0) {
+        snprintf(aprsPacket, sizeof(aprsPacket), "%s-%d>", aprsConfig.callsign, aprsConfig.ssid);
+    } else {
+        snprintf(aprsPacket, sizeof(aprsPacket), "%s>", aprsConfig.callsign);
+    }
+    
+    // 添加路径 - 参考doc/src中的路径格式
+    strcat(aprsPacket, "APRS,WIDE1-1,qAR");
+    
+    // 添加位置信息 - 使用新的formatAPRSPosition方法
+    char position[128];
+    formatAPRSPosition(position, sizeof(position), lat, lon, altitude, course, speed, battVoltage);
     strcat(aprsPacket, position);
     
-    // 添加消息
+    // 添加自定义消息（如果启用）
     if (aprsConfig.useCustomMessage && strlen(aprsConfig.customMessage) > 0) {
         strcat(aprsPacket, " ");
         strncat(aprsPacket, aprsConfig.customMessage, sizeof(aprsPacket) - strlen(aprsPacket) - 1);
-    } else {
-        strcat(aprsPacket, " Meshtastic APRS");
     }
     
-    LOG_INFO("APRSModule: Building standard APRS packet: %s", aprsPacket);
+    // 参考doc/src中的格式，添加结束标记
+    strcat(aprsPacket, "");
+    
+    LOG_INFO("APRSModule: Building APRS packet (TNC2 format): %s", aprsPacket);
     LOG_INFO("APRSModule: Using frequency: %.3f MHz, SF: %d, BW: %d kHz, CR: 4/%d, Power: %d dBm", 
              aprsConfig.frequency, aprsConfig.spreadingFactor, aprsConfig.bandwidth, 
              aprsConfig.codingRate, aprsConfig.txPower);
+    
+    // 添加LoRa头部 - 基于doc/src中的实现
+    char loraAPRSPacket[256 + 3]; // +3 for LoRa header
+    loraAPRSPacket[0] = LORA_START_BYTE_1; // '<'
+    loraAPRSPacket[1] = LORA_START_BYTE_2; // 0xFF
+    loraAPRSPacket[2] = LORA_START_BYTE_3; // 0x01
+    strncpy(loraAPRSPacket + 3, aprsPacket, sizeof(loraAPRSPacket) - 3);
     
     // 创建数据数据包
     meshtastic_MeshPacket *mp = allocDataPacket();
     mp->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP; // 使用文本消息端口
     mp->want_ack = false;
-    mp->decoded.payload.size = strlen(aprsPacket);
-    memcpy(mp->decoded.payload.bytes, aprsPacket, mp->decoded.payload.size);
+    mp->decoded.payload.size = strlen(loraAPRSPacket);
+    memcpy(mp->decoded.payload.bytes, loraAPRSPacket, mp->decoded.payload.size);
     
     return mp;
 }
@@ -248,9 +276,9 @@ meshtastic_MeshPacket *APRSModule::buildAPRSMessagePacket(const char *message)
     
     // 添加呼号和SSID
     if (aprsConfig.ssid > 0) {
-        sprintf(aprsPacket, "%s-%d>", aprsConfig.callsign, aprsConfig.ssid);
+        snprintf(aprsPacket, sizeof(aprsPacket), "%s-%d>", aprsConfig.callsign, aprsConfig.ssid);
     } else {
-        sprintf(aprsPacket, "%s>", aprsConfig.callsign);
+        snprintf(aprsPacket, sizeof(aprsPacket), "%s>", aprsConfig.callsign);
     }
     
     // 添加目标
@@ -259,18 +287,86 @@ meshtastic_MeshPacket *APRSModule::buildAPRSMessagePacket(const char *message)
     // 添加消息
     strncat(aprsPacket, message, sizeof(aprsPacket) - strlen(aprsPacket) - 1);
     
-    LOG_INFO("Building APRS message packet: %s", aprsPacket);
+    // 添加LoRa头部
+    char loraAPRSPacket[256 + 3];
+    loraAPRSPacket[0] = LORA_START_BYTE_1; // '<'
+    loraAPRSPacket[1] = LORA_START_BYTE_2; // 0xFF
+    loraAPRSPacket[2] = LORA_START_BYTE_3; // 0x01
+    strncpy(loraAPRSPacket + 3, aprsPacket, sizeof(loraAPRSPacket) - 3);
+    
+    LOG_INFO("Building APRS message packet with LoRa header");
     
     // 创建数据数据包
     meshtastic_MeshPacket *mp = allocDataPacket();
     mp->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
     mp->want_ack = false;
-    mp->decoded.payload.size = strlen(aprsPacket);
-    memcpy(mp->decoded.payload.bytes, aprsPacket, mp->decoded.payload.size);
+    mp->decoded.payload.size = strlen(loraAPRSPacket);
+    memcpy(mp->decoded.payload.bytes, loraAPRSPacket, mp->decoded.payload.size);
     
     return mp;
 }
 
+// 发送预设位置APRS数据包 - 参考doc/src中的sendpacketWithPresetLocation函数
+void APRSModule::sendPresetLocationAPRS()
+{
+    // 使用默认预设位置（可以在配置中添加预设位置选项）
+    const String LATITUDE_PRESET = "3414.97N";   // 参考doc/src中的预设值
+    const String LONGITUDE_PRESET = "10852.36E"; // 参考doc/src中的预设值
+    
+    // 获取电池电压
+    float battVoltage = 0.0;
+    if (powerStatus->getHasBattery()) {
+        battVoltage = powerStatus->getBatteryVoltageMv() / 1000.0; // 转换为伏特
+    } else {
+        battVoltage = 5.0; // 假设USB供电
+    }
+    
+    // 构建APRS包 - 基于doc/src中的sendpacketWithPresetLocation函数
+    char aprsPacket[256];
+    
+    // 添加呼号和SSID
+    if (aprsConfig.ssid > 0) {
+        snprintf(aprsPacket, sizeof(aprsPacket), "%s-%d>", aprsConfig.callsign, aprsConfig.ssid);
+    } else {
+        snprintf(aprsPacket, sizeof(aprsPacket), "%s>", aprsConfig.callsign);
+    }
+    
+    // 添加路径
+    strcat(aprsPacket, "APRS,WIDE1-1,qAR");
+    
+    // 添加位置信息 - 使用预设位置
+    snprintf(aprsPacket + strlen(aprsPacket), sizeof(aprsPacket) - strlen(aprsPacket), ":!%s/%s[b/A=000000 Batt=%.2fV Meshtastic APRS [PRESET]",
+             LATITUDE_PRESET.c_str(), LONGITUDE_PRESET.c_str(), battVoltage);
+    
+    // 添加自定义消息（如果启用）
+    if (aprsConfig.useCustomMessage && strlen(aprsConfig.customMessage) > 0) {
+        strcat(aprsPacket, " ");
+        strncat(aprsPacket, aprsConfig.customMessage, sizeof(aprsPacket) - strlen(aprsPacket) - 1);
+    }
+    
+    LOG_INFO("APRSModule: Sending APRS preset location packet: %s", aprsPacket);
+    
+    // 添加LoRa头部
+    char loraAPRSPacket[256 + 3]; // +3 for LoRa header
+    loraAPRSPacket[0] = LORA_START_BYTE_1; // '<'
+    loraAPRSPacket[1] = LORA_START_BYTE_2; // 0xFF
+    loraAPRSPacket[2] = LORA_START_BYTE_3; // 0x01
+    strncpy(loraAPRSPacket + 3, aprsPacket, sizeof(loraAPRSPacket) - 3);
+    
+    // 创建数据数据包
+    meshtastic_MeshPacket *mp = allocDataPacket();
+    mp->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+    mp->want_ack = false;
+    mp->to = NODENUM_BROADCAST;
+    mp->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
+    mp->decoded.payload.size = strlen(loraAPRSPacket);
+    memcpy(mp->decoded.payload.bytes, loraAPRSPacket, mp->decoded.payload.size);
+    
+    // 发送数据包
+    service->sendToMesh(mp, RX_SRC_LOCAL, true);
+}
+
+// 重构的APRS位置发送方法 - 基于doc/src中的sendpacket函数
 void APRSModule::sendAPRSPosition()
 {
     if (!aprsConfig.enabled) {
@@ -286,30 +382,49 @@ void APRSModule::sendAPRSPosition()
         return;
     }
     
-    // 配置无线电为APRS模式
+    // 配置无线电为APRS模式 - 基于doc/src中的loraSend函数
     LOG_INFO("APRSModule: Configuring radio for APRS transmission");
     if (!configureRadioForAPRS()) {
         LOG_ERROR("APRSModule: Failed to configure radio for APRS");
         return;
     }
     
-    // 构建APRS位置数据包
-    meshtastic_MeshPacket *p = buildAPRSPositionPacket();
-    if (p == nullptr) {
-        LOG_ERROR("APRSModule: Failed to build APRS position packet");
-        restoreOriginalRadioConfig();
-        return;
+    // 检查是否有有效的GPS位置 - 基于doc/src中的sendpacket函数
+    bool hasValidPosition = false;
+    meshtastic_NodeInfoLite *node = nodeDB->getMeshNode(nodeDB->getNodeNum());
+    if (node && nodeDB->hasValidPosition(node)) {
+        // 检查位置是否足够新（20秒内）
+        if (node->position.time > (millis() - 20000)) {
+            hasValidPosition = true;
+        }
     }
     
-    // 设置目标为广播
-    p->to = NODENUM_BROADCAST;
-    p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-    
-    LOG_INFO("APRSModule: Sending APRS packet to mesh network");
     // 发送数据包
-    service->sendToMesh(p, RX_SRC_LOCAL, true);
+    if (hasValidPosition) {
+        LOG_INFO("APRSModule: Using GPS position for APRS transmission");
+        
+        // 构建APRS位置数据包
+        meshtastic_MeshPacket *p = buildAPRSPositionPacket();
+        if (p == nullptr) {
+            LOG_ERROR("APRSModule: Failed to build APRS position packet");
+            restoreOriginalRadioConfig();
+            return;
+        }
+        
+        // 设置目标为广播
+        p->to = NODENUM_BROADCAST;
+        p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
+        
+        LOG_INFO("APRSModule: Sending APRS packet with GPS data");
+        // 发送数据包
+        service->sendToMesh(p, RX_SRC_LOCAL, true);
+    } else {
+        LOG_INFO("APRSModule: No valid GPS position, using preset location");
+        // 使用预设位置发送
+        sendPresetLocationAPRS();
+    }
     
-    // 假设发送成功，更新状态
+    // 假设发送成功，更新状态 - 基于doc/src中的状态更新
     lastAPRSSend = millis();
     txCount++; // 增加发送计数
     LOG_INFO("APRSModule: APRS position sent, total tx: %u", txCount);
@@ -326,13 +441,11 @@ void APRSModule::sendAPRSMessage(const char *message)
         LOG_DEBUG("APRS is disabled, skipping transmission");
         return;
     }
-    
     // 配置无线电为APRS模式
     if (!configureRadioForAPRS()) {
         LOG_ERROR("Failed to configure radio for APRS");
         return;
     }
-    
     // 构建APRS消息数据包
     meshtastic_MeshPacket *p = buildAPRSMessagePacket(message);
     if (p == nullptr) {
@@ -340,24 +453,19 @@ void APRSModule::sendAPRSMessage(const char *message)
         restoreOriginalRadioConfig();
         return;
     }
-    
     // 设置目标为广播
     p->to = NODENUM_BROADCAST;
     p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-    
     // 发送数据包
     service->sendToMesh(p, RX_SRC_LOCAL, true);
     lastAPRSSend = millis();
     txCount++; // 增加发送计数
-    
     LOG_INFO("APRS message sent, total tx: %u", txCount);
-    
     // 恢复原始无线电配置
     restoreOriginalRadioConfig();
 }
 
 // parseAPRSPacket方法已移除，因为不再处理接收功能
-
 bool APRSModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_AdminMessage *p)
 {
     // 处理接收到的管理消息，用于配置APRS模块
@@ -407,7 +515,6 @@ bool APRSModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtas
 }
 
 // handleLocalMeshPacket方法已移除，因为不再需要转发功能
-
 // 处理接收到的任何数据包，不处理接收功能
 ProcessMessage APRSModule::handleReceived(const meshtastic_MeshPacket &mp)
 {
@@ -433,18 +540,65 @@ int32_t APRSModule::runOnce()
     uint32_t now = millis();
     uint32_t intervalMs = aprsConfig.beaconInterval * 1000;
     
+    // 基于doc/src中的逻辑，添加分钟级别的定期发送
+    int current_minute = (now / 60000) % 60;
+    static uint32_t last_minute_send = 0;
+    
     // 检查是否需要发送APRS信标
+    // 1. 基于配置的间隔时间
+    // 2. 基于分钟的定期发送（每5分钟，参考doc/src中的实现）
+    bool shouldSend = false;
+    
+    // 基于配置的间隔时间检查
     if (lastAPRSSend == 0 || (now - lastAPRSSend) >= intervalMs) {
-        // 检查是否可以发送
-        if (airTime->isTxAllowedAirUtil()) {
-            sendAPRSPosition();
-        }
+        shouldSend = true;
     }
-    // 返回下一次运行间隔
+    
+    // 基于分钟的定期发送（每5分钟）- 参考doc/src中的实现
+    if (current_minute % 5 == 0 && (now - last_minute_send) >= 60000) {
+        shouldSend = true;
+    }
+    
+    // 检查是否可以发送并且需要发送
+    if (shouldSend && airTime->isTxAllowedAirUtil()) {
+        sendAPRSPosition();
+        last_minute_send = now; // 更新分钟发送时间
+    }
+    
+    // 返回下一次运行间隔 - 参考doc/src中的轮询间隔
     return 10000; // 10秒
 }
 
 #if HAS_SCREEN
+// 实现Observer接口的onNotify方法，处理从Observable通知来的事件
+int APRSModule::onNotify(const UIFrameEvent *evt)
+{
+    LOG_INFO("APRSModule: onNotify called with event type: %d", evt ? (int)evt->action : -1);
+    handleUIFrameEvent(evt);
+    return 0; // 返回0表示允许其他观察者继续处理
+}
+
+// 处理UI框架事件（如按钮长按）
+void APRSModule::handleUIFrameEvent(const UIFrameEvent *evt)
+{
+    // 只有当事件是长按事件时，才显示APRS菜单
+    if (evt) {
+        LOG_INFO("APRSModule: Received UIFrameEvent, action=%d", (int)evt->action);
+        if (evt->action == UIFrameEvent::Action::LONG_PRESS) {
+            LOG_INFO("APRSModule: LONG_PRESS event detected");
+            // 确保screen不为空
+            if (screen) {
+                LOG_INFO("APRSModule: Long press detected, showing APRS menu");
+                screen->requestMenu(graphics::menuHandler::aprs_menu);
+            } else {
+                LOG_ERROR("APRSModule: Screen is null, cannot show menu");
+            }
+        }
+    } else {
+        LOG_ERROR("APRSModule: NULL event received in handleUIFrameEvent");
+    }
+}
+
 void APRSModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
     // 设置字体和对齐方式
@@ -480,5 +634,9 @@ void APRSModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int1
     char packetStr[32];
     snprintf(packetStr, sizeof(packetStr), "Packets: Tx:%u", txCount);
     display->drawString(x, textPos[4], packetStr);
+    
+    // 显示提示信息
+    display->setFont(FONT_SMALL);
+    display->drawString(x, textPos[5], "Long press to configure");
 }
 #endif
