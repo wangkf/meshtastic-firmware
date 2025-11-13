@@ -32,9 +32,7 @@ APRSModule *aprsModule;
 #define LORA_START_BYTE_1 '<'
 #define LORA_START_BYTE_2 0xFF
 #define LORA_START_BYTE_3 0x01
-APRSModule::APRSModule()
-    : ProtobufModule("APRS", meshtastic_PortNum_ADMIN_APP, &meshtastic_AdminMessage_msg), 
-       concurrency::OSThread("APRS")
+APRSModule::APRSModule() : ProtobufModule("APRS", meshtastic_PortNum_ADMIN_APP, &meshtastic_AdminMessage_msg), concurrency::OSThread("APRSModule")
 {
     // 初始化默认配置 - 与TTGO_T_Beam_LoRa_APRS.ino保持一致的参数
     aprsConfig.enabled = false; // 默认禁用，避免启动时修改无线电配置
@@ -51,7 +49,7 @@ APRSModule::APRSModule()
     strcpy(aprsConfig.customMessage, "Meshtastic APRS");
     // 移除转发功能，不再需要这些字段
     
-    lastAPRSSend = 0;
+    lastAPRSSend = millis();
     lastFrequency = 0;
     isRadioReconfigured = false;
     txCount = 0;
@@ -59,6 +57,13 @@ APRSModule::APRSModule()
     // 加载配置
     loadAPRSConfig();
     
+    // Register as observer for InputEvent
+    if (inputBroker) {
+        static_cast<Observer<const InputEvent*>*>(this)->observe(inputBroker);
+        LOG_INFO("APRSModule registered as InputEvent observer");
+    }
+    
+    LOG_INFO("LoraAPRSFrameModule functionality integrated into APRSModule");
     
     LOG_INFO("APRSModule initialized: freq=%.3f MHz, enabled=%d, callsign=%s-%d", 
             aprsConfig.frequency, aprsConfig.enabled, aprsConfig.callsign, aprsConfig.ssid);
@@ -257,14 +262,34 @@ meshtastic_MeshPacket *APRSModule::buildAPRSPositionPacket()
     loraAPRSPacket[0] = LORA_START_BYTE_1; // '<'
     loraAPRSPacket[1] = LORA_START_BYTE_2; // 0xFF
     loraAPRSPacket[2] = LORA_START_BYTE_3; // 0x01
-    strncpy(loraAPRSPacket + 3, aprsPacket, sizeof(loraAPRSPacket) - 3);
+    
+    // Copy APRS packet data after LoRa header
+    size_t dataLength = strlen(aprsPacket);
+    strncpy(loraAPRSPacket + 3, aprsPacket, sizeof(loraAPRSPacket) - 4); // Leave room for '$' at end
+    
+    // Ensure packet is exactly 102 bytes long (including '<' and '$')
+    const size_t totalPacketLength = 102;
+    
+    // Calculate the number of bytes after LoRa header (should be 99 bytes: total 102 - 3 LoRa header bytes)
+    const size_t dataPartLength = totalPacketLength - 3;
+    
+    // If data is less than dataPartLength, pad with spaces and add '$' at the end
+    if (dataLength < dataPartLength) {
+        // Fill remaining with spaces up to dataPartLength - 1, then add '$'
+        memset(loraAPRSPacket + 3 + dataLength, ' ', dataPartLength - dataLength - 1);
+        loraAPRSPacket[totalPacketLength - 1] = '$'; // Last byte is '
+    } else {
+        // If data is longer than dataPartLength - 1, truncate and add '$'
+        loraAPRSPacket[dataPartLength - 1] = '$';
+        loraAPRSPacket[dataPartLength] = '\0';
+    }
     
     // 创建数据数据包
     meshtastic_MeshPacket *mp = allocDataPacket();
     mp->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP; // 使用文本消息端口
     mp->want_ack = false;
-    mp->decoded.payload.size = strlen(loraAPRSPacket);
-    memcpy(mp->decoded.payload.bytes, loraAPRSPacket, mp->decoded.payload.size);
+    mp->decoded.payload.size = totalPacketLength;
+    memcpy(mp->decoded.payload.bytes, loraAPRSPacket, totalPacketLength);
     
     return mp;
 }
@@ -292,7 +317,21 @@ meshtastic_MeshPacket *APRSModule::buildAPRSMessagePacket(const char *message)
     loraAPRSPacket[0] = LORA_START_BYTE_1; // '<'
     loraAPRSPacket[1] = LORA_START_BYTE_2; // 0xFF
     loraAPRSPacket[2] = LORA_START_BYTE_3; // 0x01
-    strncpy(loraAPRSPacket + 3, aprsPacket, sizeof(loraAPRSPacket) - 3);
+    
+    // 确保APRS包长度固定为102字节（包括LoRa头部）
+    size_t aprsLen = strlen(aprsPacket);
+    
+    // 复制APRS数据到LoRa头部之后
+    strncpy(loraAPRSPacket + 3, aprsPacket, aprsLen);
+    
+    // 填充空格确保总长度为102字节
+    size_t totalLen = aprsLen + 3;
+    if (totalLen < 102) {
+        memset(loraAPRSPacket + totalLen, ' ', 102 - totalLen);
+    }
+    
+    // 设置数据包为固定长度
+    const size_t fixedPacketLength = 102;
     
     LOG_INFO("Building APRS message packet with LoRa header");
     
@@ -300,8 +339,8 @@ meshtastic_MeshPacket *APRSModule::buildAPRSMessagePacket(const char *message)
     meshtastic_MeshPacket *mp = allocDataPacket();
     mp->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
     mp->want_ack = false;
-    mp->decoded.payload.size = strlen(loraAPRSPacket);
-    memcpy(mp->decoded.payload.bytes, loraAPRSPacket, mp->decoded.payload.size);
+    mp->decoded.payload.size = fixedPacketLength;
+    memcpy(mp->decoded.payload.bytes, loraAPRSPacket, fixedPacketLength);
     
     return mp;
 }
@@ -351,7 +390,21 @@ void APRSModule::sendPresetLocationAPRS()
     loraAPRSPacket[0] = LORA_START_BYTE_1; // '<'
     loraAPRSPacket[1] = LORA_START_BYTE_2; // 0xFF
     loraAPRSPacket[2] = LORA_START_BYTE_3; // 0x01
-    strncpy(loraAPRSPacket + 3, aprsPacket, sizeof(loraAPRSPacket) - 3);
+    
+    // 确保APRS包长度固定为102字节（包括LoRa头部）
+    size_t aprsLen = strlen(aprsPacket);
+    
+    // 复制APRS数据到LoRa头部之后
+    strncpy(loraAPRSPacket + 3, aprsPacket, aprsLen);
+    
+    // 填充空格确保总长度为102字节
+    size_t totalLen = aprsLen + 3;
+    if (totalLen < 102) {
+        memset(loraAPRSPacket + totalLen, ' ', 102 - totalLen);
+    }
+    
+    // 设置数据包为固定长度
+    const size_t fixedPacketLength = 102;
     
     // 创建数据数据包
     meshtastic_MeshPacket *mp = allocDataPacket();
@@ -359,8 +412,8 @@ void APRSModule::sendPresetLocationAPRS()
     mp->want_ack = false;
     mp->to = NODENUM_BROADCAST;
     mp->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-    mp->decoded.payload.size = strlen(loraAPRSPacket);
-    memcpy(mp->decoded.payload.bytes, loraAPRSPacket, mp->decoded.payload.size);
+    mp->decoded.payload.size = fixedPacketLength;
+    memcpy(mp->decoded.payload.bytes, loraAPRSPacket, fixedPacketLength);
     
     // 发送数据包
     service->sendToMesh(mp, RX_SRC_LOCAL, true);
@@ -578,6 +631,33 @@ int APRSModule::onNotify(const UIFrameEvent *evt)
     return 0; // 返回0表示允许其他观察者继续处理
 }
 
+int APRSModule::onNotify(const InputEvent *evt)
+{
+    if (evt) {
+        LOG_INFO("APRSModule: Received InputEvent: %d from %s", (int)evt->inputEvent, evt->source);
+        // Check for long press event
+        if (evt->inputEvent == INPUT_BROKER_SELECT_LONG) {
+            LOG_INFO("APRSModule: Handling long press event from InputBroker");
+            // Create a UIFrameEvent with LONG_PRESS action
+            UIFrameEvent longPressEvt;
+            longPressEvt.action = UIFrameEvent::Action::LONG_PRESS;
+            handleUIFrameEvent(&longPressEvt);
+        }
+        // Check for short press event
+        else if (evt->inputEvent == INPUT_BROKER_SELECT) {
+            LOG_INFO("APRSModule: Handling short press event from InputBroker");
+            // Toggle enabled status
+            aprsConfig.enabled = !aprsConfig.enabled;
+            saveAPRSConfig();
+            // Notify UI to redraw
+            UIFrameEvent redrawEvt;
+            redrawEvt.action = UIFrameEvent::Action::REDRAW_ONLY;
+            notifyObservers(&redrawEvt);
+        }
+    }
+    return 0; // 返回0表示允许其他观察者继续处理
+}
+
 // 处理UI框架事件（如按钮长按）
 void APRSModule::handleUIFrameEvent(const UIFrameEvent *evt)
 {
@@ -606,7 +686,7 @@ void APRSModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int1
     display->setTextAlignment(TEXT_ALIGN_LEFT);
     
     // 绘制通用头部
-    graphics::drawCommonHeader(display, x, y, "APRS");
+    graphics::drawCommonHeader(display, x, y, "Lora APRS");
     
     // 获取标准文本位置
     const int *textPos = graphics::getTextPositions(display);
@@ -616,27 +696,61 @@ void APRSModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int1
     snprintf(statusStr, sizeof(statusStr), "Status: %s", aprsConfig.enabled ? "Enabled" : "Disabled");
     display->drawString(x, textPos[1], statusStr);
     
-    // 显示呼号和SSID
-    char callsignStr[32];
-    if (aprsConfig.ssid > 0) {
-        snprintf(callsignStr, sizeof(callsignStr), "Callsign: %s-%d", aprsConfig.callsign, aprsConfig.ssid);
+    // 获取本地节点信息
+    meshtastic_NodeInfoLite *node = nodeDB->getMeshNode(nodeDB->getNodeNum());
+    
+    // 如果有有效的位置信息，显示位置数据
+    if (node && nodeDB->hasValidPosition(node)) {
+        // 格式化并显示纬度
+        char latStr[16];
+        snprintf(latStr, sizeof(latStr), "Lat: %.5f", node->position.latitude_i * 1e-7);
+        display->drawString(x, textPos[2], latStr);
+        
+        // 格式化并显示经度
+        char lonStr[16];
+        snprintf(lonStr, sizeof(lonStr), "Lon: %.5f", node->position.longitude_i * 1e-7);
+        display->drawString(x, textPos[3], lonStr);
+        
+        // 格式化并显示高度
+        char altStr[16];
+        snprintf(altStr, sizeof(altStr), "Alt: %dm", node->position.altitude);
+        display->drawString(x, textPos[4], altStr);
     } else {
-        snprintf(callsignStr, sizeof(callsignStr), "Callsign: %s", aprsConfig.callsign);
+        // 如果没有位置信息，显示提示
+        display->drawString(x, textPos[2], "No position data");
+        display->drawString(x, textPos[3], "available");
+        // 清空第5行，防止显示旧数据
+        display->drawString(x, textPos[4], "");
     }
-    display->drawString(x, textPos[2], callsignStr);
     
     // 显示频率
     char freqStr[32];
     snprintf(freqStr, sizeof(freqStr), "Freq: %.3f MHz", aprsConfig.frequency);
-    display->drawString(x, textPos[3], freqStr);
-    
-    // 显示数据包计数
-    char packetStr[32];
-    snprintf(packetStr, sizeof(packetStr), "Packets: Tx:%u", txCount);
-    display->drawString(x, textPos[4], packetStr);
-    
-    // 显示提示信息
-    display->setFont(FONT_SMALL);
-    display->drawString(x, textPos[5], "Long press to configure");
+    display->drawString(x, textPos[5], freqStr);
+}
+
+// 处理来自PositionModule的输入事件
+bool APRSModule::onNotify(const InputEvent *event, const char *eventContext)
+{
+    // 处理UI框架事件
+    if (event && eventContext && strcmp(eventContext, "ui_frame") == 0) {
+        // 检查是否为长按事件
+        if (event->inputEvent == INPUT_BROKER_SELECT_LONG) {
+            handleUIFrameEvent(nullptr); // 使用nullptr，让handleUIFrameEvent处理默认情况
+            return true;
+        }
+        // 检查是否为短按事件
+        else if (event->inputEvent == INPUT_BROKER_SELECT) {
+            // 切换启用状态
+            aprsConfig.enabled = !aprsConfig.enabled;
+            saveAPRSConfig();
+            // 通知UI重绘
+            UIFrameEvent e;
+            e.action = UIFrameEvent::Action::REDRAW_ONLY;
+            notifyObservers(&e);
+            return true;
+        }
+    }
+    return false;
 }
 #endif

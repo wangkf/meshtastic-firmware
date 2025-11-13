@@ -1,17 +1,22 @@
 #pragma once
 #include "ProtobufModule.h"
+#include "PositionModule.h"
 #include "concurrency/OSThread.h"
 #include "meshtastic/mesh.pb.h"
 #include "meshtastic/module_config.pb.h"
 #include "configuration.h"
 #include "Observer.h"
+#include "input/InputBroker.h"
+
+#if HAS_SCREEN
 #include "OLEDDisplay.h"
 #include "OLEDDisplayUi.h"
+#endif
 
 #include <Arduino.h>
 
 //*** APRS模块用于发送/接收APRS格式的位置和信息数据包
-class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concurrency::OSThread, public Observable<const UIFrameEvent *>, public Observer<const UIFrameEvent *>
+class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concurrency::OSThread, public Observable<const UIFrameEvent *>, public Observer<const UIFrameEvent *>, public Observer<const InputEvent *>
 {
   private:
     // APRS配置结构体
@@ -99,8 +104,12 @@ class APRSModule : public ProtobufModule<meshtastic_AdminMessage>, private concu
     virtual void handleUIFrameEvent(const UIFrameEvent *evt);
     // 实现Observer接口 - 处理UI框架事件
     virtual int onNotify(const UIFrameEvent *evt) override;
+    // 实现Observer接口 - 处理输入事件
+    virtual int onNotify(const InputEvent *evt) override;
     // 显示APRS配置菜单
     void showAPRSConfigMenu();
+    // 处理来自PositionModule的输入事件
+    bool onNotify(const InputEvent *event, const char *eventContext);
 #endif
 };
 
